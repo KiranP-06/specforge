@@ -6,13 +6,13 @@ install_docker: true                       # Docker for local builds / Swarm dem
 cloudwatch_agent_url: https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
 
 # GitHub repository that the self-hosted runner registers against, e.g. "anshumaan/specforge"
-github_repo: "CHANGE_ME/specforge"
-github_runner_version: "2.321.0"
+github_repo: "KiranP-06/specforge"
+github_runner_version: "2.338.2"
 github_runner_labels: "self-hosted,linux,x64,specforge-ec2"
 github_runner_user: runner
 
 # Container images (CD pins tags to the commit SHA; "latest" is used for the first bootstrap)
-ghcr_owner: "CHANGE_ME"                    # lowercase GitHub username / org
+ghcr_owner: "kiranp-06"                    # lowercase GitHub username / org
 image_tag: latest
 
 llm_provider: heuristic

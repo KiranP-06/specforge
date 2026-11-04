@@ -9,7 +9,7 @@
   ansible.builtin.command: /usr/local/bin/k3s-install.sh
   environment:
     INSTALL_K3S_VERSION: "{{ k3s_version }}"
-    INSTALL_K3S_EXEC: "server --write-kubeconfig-mode 0640 --tls-san {{ inventory_hostname }} --kubelet-arg=max-pods=60"
+    INSTALL_K3S_EXEC: "server --write-kubeconfig-mode 0640 --tls-san {{ inventory_hostname }} --kubelet-arg=max-pods=60 --cluster-cidr=10.52.0.0/16 --service-cidr=10.53.0.0/16"
   args:
     creates: /usr/local/bin/k3s
 

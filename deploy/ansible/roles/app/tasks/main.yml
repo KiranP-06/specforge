@@ -58,6 +58,12 @@
     executable: /bin/bash
   no_log: true
   changed_when: false
+  when: vault_ghcr_pull_token | default('', true) | length > 0
+
+- name: Remove GHCR image-pull secret when images are public (bad credentials make GHCR return 403)
+  ansible.builtin.command: k3s kubectl -n {{ app_namespace }} delete secret ghcr-pull --ignore-not-found
+  when: vault_ghcr_pull_token | default('', true) | length == 0
+  changed_when: false
 
 - name: Configure HTTPS (Let's Encrypt via Traefik) when a domain is set
   ansible.builtin.template:
