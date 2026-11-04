@@ -1,0 +1,25 @@
+---
+project: specforge
+app_namespace: specforge
+k3s_version: v1.31.4+k3s1
+install_docker: true                       # Docker for local builds / Swarm demo; k3s itself uses containerd
+cloudwatch_agent_url: https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+
+# GitHub repository that the self-hosted runner registers against, e.g. "anshumaan/specforge"
+github_repo: "CHANGE_ME/specforge"
+github_runner_version: "2.321.0"
+github_runner_labels: "self-hosted,linux,x64,specforge-ec2"
+github_runner_user: runner
+
+# Container images (CD pins tags to the commit SHA; "latest" is used for the first bootstrap)
+ghcr_owner: "CHANGE_ME"                    # lowercase GitHub username / org
+image_tag: latest
+
+llm_provider: heuristic
+llm_base_url: https://api.openai.com/v1
+llm_model: gpt-4o-mini
+
+# HTTPS (optional): a domain pointing at the Elastic IP, e.g. a free DuckDNS name.
+# Leave empty for plain HTTP on the IP.
+domain: ""
+letsencrypt_email: ""

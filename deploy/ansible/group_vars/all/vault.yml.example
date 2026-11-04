@@ -1,0 +1,8 @@
+---
+# cp vault.yml.example vault.yml && ansible-vault encrypt vault.yml
+vault_postgres_password: "change-me"            # openssl rand -hex 16
+vault_jwt_secret: "change-me"                   # openssl rand -hex 32
+vault_grafana_admin_password: "change-me"       # Grafana admin login (/grafana)
+vault_llm_api_key: ""                           # only if llm_provider != heuristic
+vault_github_runner_token: "REGISTRATION_TOKEN" # repo → Settings → Actions → Runners → New self-hosted runner (valid 1 hour)
+vault_ghcr_pull_token: ""                        # GitHub PAT with read:packages (leave empty if images are public)

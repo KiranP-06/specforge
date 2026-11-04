@@ -1,0 +1,6 @@
+# cp backend.hcl.example backend.hcl, then: terraform init -backend-config=backend.hcl
+bucket       = "specforge-tfstate-REPLACE"   # from: terraform -chdir=bootstrap output -raw state_bucket
+key          = "specforge/prod/terraform.tfstate"
+region       = "us-east-1"
+encrypt      = true
+use_lockfile = true

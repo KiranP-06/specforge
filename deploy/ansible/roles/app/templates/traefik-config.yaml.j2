@@ -1,0 +1,19 @@
+# Managed by Ansible: k3s applies files in this directory automatically.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    ports:
+      web:
+        redirectTo:
+          port: websecure
+    persistence:
+      enabled: true
+      path: /data
+    additionalArguments:
+      - "--certificatesresolvers.le.acme.email={{ letsencrypt_email }}"
+      - "--certificatesresolvers.le.acme.storage=/data/acme.json"
+      - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"

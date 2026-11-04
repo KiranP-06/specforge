@@ -1,0 +1,232 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # ------------------------------------------------------------------ 02 CI
+  backend:
+    name: Backend · lint, test, migrations, SAST
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: backend } }
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env: { POSTGRES_DB: specforge, POSTGRES_USER: specforge, POSTGRES_PASSWORD: specforge }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U specforge" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      PG_URL: postgresql+psycopg://specforge:specforge@localhost:5432/specforge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip, cache-dependency-path: backend/requirements*.txt }
+      - run: pip install -r requirements-dev.txt
+      - name: Ruff (lint)
+        run: ruff check app tests migrations
+      - name: Pytest (SQLite)
+        run: pytest -q --junitxml=pytest-report.xml
+      - name: Alembic — upgrade, drift check, downgrade, re-upgrade (PostgreSQL + pgvector)
+        run: |
+          DATABASE_URL=$PG_URL alembic upgrade head
+          DATABASE_URL=$PG_URL alembic check
+          DATABASE_URL=$PG_URL alembic downgrade base
+          DATABASE_URL=$PG_URL alembic upgrade head
+      - name: Pytest (PostgreSQL + pgvector, schema from migrations)
+        run: DATABASE_URL=$PG_URL AUTO_CREATE_TABLES=false pytest -q
+      - name: Bandit (SAST, fail on medium+)
+        run: bandit -r app -c pyproject.toml -ll
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: pytest-report, path: backend/pytest-report.xml }
+
+  frontend:
+    name: Frontend · lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: frontend } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  iac:
+    name: IaC · terraform, ansible, k8s
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.10.5" }
+      - name: terraform fmt
+        run: terraform fmt -check -recursive deploy/terraform
+      - name: terraform validate
+        run: |
+          for d in deploy/terraform deploy/terraform/bootstrap; do
+            terraform -chdir=$d init -backend=false -input=false
+            terraform -chdir=$d validate
+          done
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install ansible-core ansible-lint kubernetes-validate
+      - name: ansible-lint
+        working-directory: deploy/ansible
+        run: |
+          cp inventory.ini.example inventory.ini
+          cp group_vars/all/vault.yml.example group_vars/all/vault.yml
+          ansible-playbook site.yml --syntax-check
+          ansible-lint site.yml
+      - uses: imranismail/setup-kustomize@v2
+        with: { kustomize-version: "5.5.0" }
+      - name: Kubernetes — render both overlays and validate against the 1.31 schema
+        run: |
+          for o in aws local; do
+            kustomize build deploy/k8s/overlays/$o > /tmp/$o.yaml
+            kubernetes-validate -k 1.31.0 --strict /tmp/$o.yaml
+          done
+      - name: Prometheus config & alert rules (promtool)
+        run: |
+          docker run --rm -v "$PWD/deploy/k8s/monitoring/files:/w" --entrypoint promtool prom/prometheus:v2.55.1 check rules /w/alerts.yml
+          for f in prometheus-k8s.yml prometheus-compose.yml; do
+            sed 's|/etc/prometheus/alerts.yml|/w/alerts.yml|' deploy/k8s/monitoring/files/$f > /tmp/$f
+            docker run --rm -v "$PWD/deploy/k8s/monitoring/files:/w" -v /tmp/$f:/tmp/$f --entrypoint promtool prom/prometheus:v2.55.1 check config /tmp/$f
+          done
+          python -m json.tool deploy/k8s/monitoring/files/specforge-dashboard.json > /dev/null
+      - name: Docker Compose files
+        run: |
+          docker compose config -q
+          docker compose --profile monitoring config -q
+
+  scan:
+    name: Trivy · dependencies & IaC
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependency vulnerabilities (blocking)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: IaC misconfigurations (report only)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: deploy
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+
+  e2e:
+    name: E2E · real images, full stack, smoke tests
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build images and start the whole stack (app + Prometheus + Grafana)
+        run: |
+          cp .env.example .env
+          docker compose --profile monitoring up -d --build
+          for _ in $(seq 60); do curl -sf localhost:8080/ready >/dev/null && break; sleep 3; done
+          docker compose ps -a
+      - name: Smoke tests through Nginx
+        run: SKIP_GRAFANA=1 bash scripts/smoke_test.sh http://localhost:8080
+      - name: Generate a blueprint through the Celery worker
+        run: |
+          T=$(curl -sf -X POST localhost:8080/api/auth/register -H 'Content-Type: application/json' \
+                -d '{"email":"ci@example.com","name":"CI","password":"password123"}' | jq -r .access_token)
+          P=$(curl -sf -X POST localhost:8080/api/projects -H "Authorization: Bearer $T" -H 'Content-Type: application/json' \
+                -d "$(jq -n --rawfile b samples/campus_canteen_brief.md '{name:"CI",brief_text:$b}')" | jq -r .id)
+          J=$(curl -sf -X POST "localhost:8080/api/projects/$P/generate" -H "Authorization: Bearer $T" | jq -r .id)
+          for _ in $(seq 60); do
+            S=$(curl -sf "localhost:8080/api/jobs/$J" -H "Authorization: Bearer $T" | jq -r .status)
+            [ "$S" = succeeded ] && break; [ "$S" = failed ] && exit 1; sleep 2
+          done
+          [ "$S" = succeeded ]
+          curl -sf "localhost:8080/api/projects/$P/dashboard" -H "Authorization: Bearer $T" | jq '.quality.score'
+      - name: Monitoring is live (Prometheus scrapes the API, Grafana is provisioned)
+        run: |
+          sleep 20
+          curl -sf localhost:9090/api/v1/targets | jq -e '.data.activeTargets[] | select(.labels.job=="api") | .health=="up"'
+          curl -sf 'localhost:9090/api/v1/query?query=specforge_blueprint_quality_score' | jq -e '.data.result | length > 0'
+          curl -sf -u admin:admin localhost:3000/api/search?query=SPECForge | jq -e 'length > 0'
+      - name: Logs on failure
+        if: failure()
+        run: docker compose --profile monitoring logs --tail=100
+
+  # ------------------------------------------------------------------ 03 Build & push
+  build:
+    name: Build, scan & push · ${{ matrix.image }}
+    needs: [backend, frontend, iac, scan, e2e]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    strategy:
+      matrix:
+        include:
+          - { image: specforge-api, context: backend }
+          - { image: specforge-web, context: frontend }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lower-case owner for GHCR
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - name: Build image (tagged by commit SHA)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          load: true
+          build-args: GIT_SHA=${{ github.sha }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}:latest
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+      - name: Trivy image scan (blocking on fixable CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}:${{ github.sha }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Push
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/${{ matrix.image }}:latest
+
+  # ------------------------------------------------------------------ 06 Deploy · 07 Verify
+  deploy:
+    name: Deploy to k3s on EC2
+    needs: build
+    runs-on: [self-hosted, specforge-ec2]   # runner installed on the EC2 by Ansible; uses LabInstanceProfile, no AWS keys in GitHub
+    environment:
+      name: production
+      url: ${{ vars.APP_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lower-case owner
+        run: echo "OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+      - name: Rolling update + smoke test (auto-rollback on failure)
+        run: bash scripts/deploy.sh "${{ github.sha }}" "$OWNER"

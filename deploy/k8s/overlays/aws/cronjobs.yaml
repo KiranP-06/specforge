@@ -1,0 +1,63 @@
+# Nightly PostgreSQL dump to S3 (uses the EC2 instance profile — no keys in the cluster).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pg-backup
+  namespace: specforge
+spec:
+  schedule: "30 20 * * *"        # 02:00 IST
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          volumes: [{ name: dump, emptyDir: {} }]
+          initContainers:
+            - name: dump
+              image: pgvector/pgvector:pg16
+              env:
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: specforge-secrets, key: POSTGRES_PASSWORD } }
+              command: ["sh", "-c", "pg_dump -h postgres -U specforge -d specforge -Fc -f /dump/specforge-$(date +%Y%m%d-%H%M).dump"]
+              volumeMounts: [{ name: dump, mountPath: /dump }]
+          containers:
+            - name: upload
+              image: amazon/aws-cli:2.22.8
+              envFrom: [{ configMapRef: { name: specforge-config } }]
+              command: ["sh", "-c", "aws s3 cp /dump/ s3://$S3_BUCKET/backups/postgres/ --recursive --sse AES256"]
+              volumeMounts: [{ name: dump, mountPath: /dump }]
+---
+# Publishes the Celery queue backlog as a CloudWatch custom metric every minute.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: queue-metrics
+  namespace: specforge
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 50
+      template:
+        spec:
+          restartPolicy: Never
+          volumes: [{ name: shared, emptyDir: {} }]
+          initContainers:
+            - name: read-queue
+              image: redis:7-alpine
+              command: ["sh", "-c", "redis-cli -h redis llen celery > /shared/depth"]
+              volumeMounts: [{ name: shared, mountPath: /shared }]
+          containers:
+            - name: publish
+              image: amazon/aws-cli:2.22.8
+              envFrom: [{ configMapRef: { name: specforge-config } }]
+              command: ["sh", "-c", "aws cloudwatch put-metric-data --namespace SPECForge --metric-name QueueBacklog --unit Count --value $(cat /shared/depth) --region $AWS_REGION"]
+              volumeMounts: [{ name: shared, mountPath: /shared }]

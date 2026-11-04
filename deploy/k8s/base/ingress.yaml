@@ -1,0 +1,15 @@
+# k3s ships Traefik as its ingress controller. TLS: point a domain (e.g. a free DuckDNS name)
+# at the Elastic IP and enable the cert-manager section in docs/DEPLOYMENT.md.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: specforge
+  namespace: specforge
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - { path: /, pathType: Prefix, backend: { service: { name: web, port: { number: 80 } } } }

@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: monitoring
+resources:
+  - namespace.yaml
+  - prometheus.yaml
+  - node-exporter.yaml
+  - grafana.yaml
+generatorOptions:
+  disableNameSuffixHash: false   # config changes roll the pods automatically
+configMapGenerator:
+  - name: prometheus-config
+    files:
+      - prometheus.yml=files/prometheus-k8s.yml
+      - alerts.yml=files/alerts.yml
+  - name: grafana-datasources
+    files: [datasources.yml=files/grafana-datasources.yml]
+  - name: grafana-dashboard-providers
+    files: [dashboards.yml=files/grafana-dashboards.yml]
+  - name: grafana-dashboards
+    files: [specforge-dashboard.json=files/specforge-dashboard.json]

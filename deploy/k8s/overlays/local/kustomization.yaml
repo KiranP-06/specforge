@@ -1,0 +1,31 @@
+# Local overlay: the same manifests on a k3d cluster on your laptop (scripts/local-k8s.sh).
+# Plan B for demos when AWS Learner Lab is unavailable. Images are built locally and imported.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - ../../monitoring
+images:
+  - { name: specforge-api, newName: specforge-api, newTag: local }
+  - { name: specforge-web, newName: specforge-web, newTag: local }
+patches:
+  - target: { kind: Deployment, namespace: specforge, name: "api|worker|web" }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+  - target: { kind: Deployment, name: api }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/initContainers/0/imagePullPolicy
+        value: IfNotPresent
+  - target: { kind: ConfigMap, name: specforge-config }
+    patch: |-
+      - op: replace
+        path: /data/ENVIRONMENT
+        value: local-k8s
+  - target: { kind: StatefulSet, name: postgres }
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 2Gi

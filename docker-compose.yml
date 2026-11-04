@@ -1,0 +1,112 @@
+# Local development stack:  docker compose up --build   →  http://localhost:8080
+# With monitoring:          docker compose --profile monitoring up --build
+#                           → Grafana http://localhost:3000 (admin / admin), Prometheus http://localhost:9090
+name: specforge
+
+x-api-env: &api-env
+  DATABASE_URL: postgresql+psycopg://specforge:${POSTGRES_PASSWORD:-specforge}@db:5432/specforge
+  REDIS_URL: redis://redis:6379/0
+  INLINE_JOBS: "false"
+  JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-in-production-please}
+  LLM_PROVIDER: ${LLM_PROVIDER:-heuristic}
+  LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+  USE_TRANSFORMER_MODELS: ${USE_TRANSFORMER_MODELS:-false}
+  STORAGE_BACKEND: local
+  STORAGE_LOCAL_DIR: /app/data
+  CORS_ORIGINS: http://localhost:8080,http://localhost:5173
+  ENVIRONMENT: dev
+  AUTO_CREATE_TABLES: "false"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: specforge
+      POSTGRES_USER: specforge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-specforge}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U specforge -d specforge"]
+      interval: 5s
+      retries: 20
+    ports: ["5432:5432"]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 20
+
+  migrate:
+    build: { context: ./backend, args: { WITH_ML: "${WITH_ML:-false}" } }
+    image: specforge-api:dev
+    command: ["alembic", "upgrade", "head"]
+    environment: *api-env
+    depends_on:
+      db: { condition: service_healthy }
+
+  api:
+    build: { context: ./backend, args: { WITH_ML: "${WITH_ML:-false}" } }
+    image: specforge-api:dev
+    environment: *api-env
+    volumes: [appdata:/app/data]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    ports: ["8000:8000"]
+
+  worker:
+    build: { context: ./backend, args: { WITH_ML: "${WITH_ML:-false}" } }
+    image: specforge-api:dev
+    command: ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    environment: *api-env
+    volumes: [appdata:/app/data]
+    depends_on:
+      api: { condition: service_started }
+
+  web:
+    build: ./frontend
+    image: specforge-web:dev
+    environment:
+      API_UPSTREAM: http://api:8000
+    depends_on: [api]
+    ports: ["8080:8080"]
+
+  # ---------------------------------------------------------------- monitoring profile
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: [monitoring]
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=2d"]
+    volumes:
+      - ./deploy/k8s/monitoring/files/prometheus-compose.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/k8s/monitoring/files/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports: ["9090:9090"]
+    depends_on: [api]
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    profiles: [monitoring]
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    profiles: [monitoring]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/specforge-dashboard.json
+    volumes:
+      - ./deploy/k8s/monitoring/files/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./deploy/k8s/monitoring/files/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./deploy/k8s/monitoring/files/specforge-dashboard.json:/var/lib/grafana/dashboards/specforge-dashboard.json:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  pgdata:
+  redisdata:
+  appdata:

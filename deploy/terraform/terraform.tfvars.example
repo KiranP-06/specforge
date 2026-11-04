@@ -1,0 +1,4 @@
+# cp terraform.tfvars.example terraform.tfvars  (tfvars are git-ignored)
+admin_cidr  = "203.0.113.7/32" # curl -s ifconfig.me
+alarm_email = ""                # optional
+# instance_type = "t3.large"

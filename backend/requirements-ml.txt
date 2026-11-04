@@ -1,0 +1,4 @@
+# Optional CPU-only transformer models for the ML layer (USE_TRANSFORMER_MODELS=true).
+# Install torch from the CPU index first to avoid pulling CUDA wheels:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+sentence-transformers>=3.0,<6

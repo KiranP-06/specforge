@@ -1,0 +1,105 @@
+---
+- name: Copy Kubernetes manifests (base, monitoring, overlays)
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../k8s/"
+    dest: /opt/specforge/k8s/
+    mode: "0644"
+
+- name: Point the AWS overlay at this account's registry, bucket and settings
+  ansible.builtin.replace:
+    path: "/opt/specforge/k8s/overlays/aws/{{ item.file }}"
+    regexp: "{{ item.from }}"
+    replace: "{{ item.to }}"
+  loop:
+    - { file: kustomization.yaml, from: "ghcr.io/OWNER/", to: "ghcr.io/{{ ghcr_owner }}/" }
+    - { file: kustomization.yaml, from: "newTag: latest", to: "newTag: {{ image_tag }}" }
+    - { file: configmap-patch.yaml, from: "REPLACE_WITH_TERRAFORM_OUTPUT", to: "{{ s3_bucket }}" }
+    - { file: configmap-patch.yaml, from: "AWS_REGION: us-east-1", to: "AWS_REGION: {{ aws_region }}" }
+    - { file: configmap-patch.yaml, from: "LLM_PROVIDER: heuristic", to: "LLM_PROVIDER: {{ llm_provider }}" }
+    - { file: configmap-patch.yaml, from: "LLM_BASE_URL: https://api.openai.com/v1", to: "LLM_BASE_URL: {{ llm_base_url }}" }
+    - { file: configmap-patch.yaml, from: "LLM_MODEL: gpt-4o-mini", to: "LLM_MODEL: {{ llm_model }}" }
+
+- name: Create namespaces
+  ansible.builtin.command: k3s kubectl apply -f /opt/specforge/k8s/base/namespace.yaml -f /opt/specforge/k8s/monitoring/namespace.yaml
+  register: app_ns
+  changed_when: "'created' in app_ns.stdout"
+
+- name: Create / update application secret
+  ansible.builtin.shell: |
+    set -o pipefail
+    k3s kubectl -n {{ app_namespace }} create secret generic specforge-secrets \
+      --from-literal=POSTGRES_PASSWORD='{{ vault_postgres_password }}' \
+      --from-literal=JWT_SECRET='{{ vault_jwt_secret }}' \
+      --from-literal=DATABASE_URL='postgresql+psycopg://specforge:{{ vault_postgres_password }}@postgres:5432/specforge' \
+      --from-literal=LLM_API_KEY='{{ vault_llm_api_key }}' \
+      --dry-run=client -o yaml | k3s kubectl apply -f -
+  args:
+    executable: /bin/bash
+  no_log: true
+  changed_when: false
+
+- name: Create / update Grafana admin secret
+  ansible.builtin.shell: |
+    set -o pipefail
+    k3s kubectl -n monitoring create secret generic grafana-admin \
+      --from-literal=password='{{ vault_grafana_admin_password }}' --dry-run=client -o yaml | k3s kubectl apply -f -
+  args:
+    executable: /bin/bash
+  no_log: true
+  changed_when: false
+
+- name: Create GHCR image-pull secret (private images)
+  ansible.builtin.shell: |
+    set -o pipefail
+    k3s kubectl -n {{ app_namespace }} create secret docker-registry ghcr-pull \
+      --docker-server=ghcr.io --docker-username='{{ ghcr_owner }}' --docker-password='{{ vault_ghcr_pull_token | default("none", true) }}' \
+      --dry-run=client -o yaml | k3s kubectl apply -f -
+  args:
+    executable: /bin/bash
+  no_log: true
+  changed_when: false
+
+- name: Configure HTTPS (Let's Encrypt via Traefik) when a domain is set
+  ansible.builtin.template:
+    src: traefik-config.yaml.j2
+    dest: /var/lib/rancher/k3s/server/manifests/traefik-config.yaml
+    mode: "0600"
+  when: domain | length > 0
+
+- name: Apply manifests (kustomize overlay)
+  ansible.builtin.command: k3s kubectl apply -k /opt/specforge/k8s/overlays/aws/
+  register: app_apply
+  changed_when: "'configured' in app_apply.stdout or 'created' in app_apply.stdout"
+
+- name: Route the domain over HTTPS
+  ansible.builtin.command: >
+    k3s kubectl -n {{ item.ns }} annotate ingress {{ item.name }} --overwrite
+    traefik.ingress.kubernetes.io/router.tls=true
+    traefik.ingress.kubernetes.io/router.tls.certresolver=le
+  loop:
+    - { ns: "{{ app_namespace }}", name: specforge }
+    - { ns: monitoring, name: grafana }
+  when: domain | length > 0
+  changed_when: false
+
+- name: Wait for rollouts
+  ansible.builtin.command: "k3s kubectl -n {{ item.ns }} rollout status {{ item.obj }} --timeout=300s"
+  loop:
+    - { ns: "{{ app_namespace }}", obj: statefulset/postgres }
+    - { ns: "{{ app_namespace }}", obj: deployment/redis }
+    - { ns: "{{ app_namespace }}", obj: deployment/api }
+    - { ns: "{{ app_namespace }}", obj: deployment/worker }
+    - { ns: "{{ app_namespace }}", obj: deployment/web }
+    - { ns: monitoring, obj: deployment/prometheus }
+    - { ns: monitoring, obj: deployment/grafana }
+    - { ns: monitoring, obj: daemonset/node-exporter }
+  changed_when: false
+
+- name: Smoke test through the ingress
+  ansible.builtin.uri:
+    url: "http://127.0.0.1/health"
+    status_code: 200
+  register: app_smoke
+  retries: 10
+  delay: 6
+  until: app_smoke.status == 200

@@ -1,0 +1,20 @@
+---
+# Full host configuration + application deploy (idempotent):
+#   ansible-playbook site.yml --ask-vault-pass
+- name: Configure SPECForge k3s node
+  hosts: k3s
+  become: true
+  roles:
+    - role: common
+      tags: [common]
+    - role: docker
+      tags: [docker]
+      when: install_docker | bool
+    - role: k3s
+      tags: [k3s]
+    - role: cloudwatch
+      tags: [cloudwatch]
+    - role: github_runner
+      tags: [runner]
+    - role: app
+      tags: [app]

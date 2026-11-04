@@ -1,0 +1,30 @@
+# Serves the React build and reverse-proxies the API.
+# ${API_UPSTREAM} is substituted at container start (nginx:alpine templates feature).
+server {
+    listen 8080;
+    server_name _;
+    root /usr/share/nginx/html;
+    client_max_body_size 12m;
+    server_tokens off;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+
+    location /api/ {
+        proxy_pass ${API_UPSTREAM};
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+    }
+    location = /health { proxy_pass ${API_UPSTREAM}; }
+    location = /ready  { proxy_pass ${API_UPSTREAM}; }
+    location ~ ^/(docs|openapi.json) { proxy_pass ${API_UPSTREAM}; }
+
+    location /assets/ { expires 30d; add_header Cache-Control "public, immutable"; }
+    location / { try_files $uri /index.html; }
+}

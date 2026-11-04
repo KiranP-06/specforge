@@ -1,0 +1,73 @@
+# Docker Swarm deployment (interim cluster before k3s):
+#   docker swarm init
+#   printf '%s' "$JWT_SECRET" | docker secret create jwt_secret -
+#   printf '%s' "$POSTGRES_PASSWORD" | docker secret create pg_password -
+#   printf "postgresql+psycopg://specforge:%s@db:5432/specforge" "$POSTGRES_PASSWORD" | docker secret create database_url -
+#   IMAGE_TAG=<sha> docker stack deploy -c docker-stack.yml specforge
+version: "3.9"
+
+x-api-env: &api-env
+  REDIS_URL: redis://redis:6379/0
+  INLINE_JOBS: "false"
+  LLM_PROVIDER: heuristic
+  STORAGE_BACKEND: s3
+  S3_BUCKET: ${S3_BUCKET}
+  AWS_REGION: ${AWS_REGION:-us-east-1}
+  ENVIRONMENT: swarm
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: specforge
+      POSTGRES_USER: specforge
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+    secrets: [pg_password]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [backend]
+    deploy: { placement: { constraints: [node.role == manager] } }
+
+  redis:
+    image: redis:7-alpine
+    networks: [backend]
+
+  api:
+    image: ghcr.io/${GHCR_OWNER}/specforge-api:${IMAGE_TAG:-latest}
+    environment: *api-env
+    entrypoint: ["sh", "-c", "export DATABASE_URL=$$(cat /run/secrets/database_url) JWT_SECRET=$$(cat /run/secrets/jwt_secret); exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2 --proxy-headers"]
+    secrets: [database_url, jwt_secret]
+    networks: [backend, frontend]
+    deploy:
+      replicas: 2
+      update_config: { parallelism: 1, delay: 10s, order: start-first, failure_action: rollback }
+      rollback_config: { parallelism: 1 }
+      restart_policy: { condition: on-failure }
+
+  worker:
+    image: ghcr.io/${GHCR_OWNER}/specforge-api:${IMAGE_TAG:-latest}
+    environment: *api-env
+    entrypoint: ["sh", "-c", "export DATABASE_URL=$$(cat /run/secrets/database_url) JWT_SECRET=$$(cat /run/secrets/jwt_secret); exec celery -A app.worker.celery_app worker --loglevel=INFO"]
+    secrets: [database_url, jwt_secret]
+    networks: [backend]
+    deploy: { replicas: 1 }
+
+  web:
+    image: ghcr.io/${GHCR_OWNER}/specforge-web:${IMAGE_TAG:-latest}
+    environment: { API_UPSTREAM: "http://api:8000" }
+    ports: ["80:8080"]
+    networks: [frontend]
+    deploy:
+      replicas: 2
+      update_config: { parallelism: 1, order: start-first, failure_action: rollback }
+
+networks:
+  backend: { driver: overlay, internal: true }
+  frontend: { driver: overlay }
+
+volumes:
+  pgdata:
+
+secrets:
+  pg_password: { external: true }
+  jwt_secret: { external: true }
+  database_url: { external: true }

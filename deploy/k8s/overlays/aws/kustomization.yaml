@@ -1,0 +1,18 @@
+# Production overlay: AWS EC2 + k3s. Ansible replaces OWNER / bucket / region / LLM values
+# (roles/app) and CD pins the image tags to the commit SHA (scripts/deploy.sh).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - ../../monitoring
+  - cronjobs.yaml          # nightly pg_dump → S3, queue backlog → CloudWatch
+images:
+  - { name: specforge-api, newName: ghcr.io/OWNER/specforge-api, newTag: latest }
+  - { name: specforge-web, newName: ghcr.io/OWNER/specforge-web, newTag: latest }
+patches:
+  - path: configmap-patch.yaml
+  - target: { kind: Deployment, namespace: specforge, name: "api|worker|web" }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/imagePullSecrets
+        value: [{ name: ghcr-pull }]

@@ -1,0 +1,64 @@
+---
+- name: Create runner user (member of k3s group for kubectl access)
+  ansible.builtin.user:
+    name: "{{ github_runner_user }}"
+    groups: k3s
+    append: true
+    shell: /bin/bash
+    create_home: true
+
+- name: Create runner directory
+  ansible.builtin.file:
+    path: "/home/{{ github_runner_user }}/actions-runner"
+    state: directory
+    owner: "{{ github_runner_user }}"
+    mode: "0755"
+
+- name: Download and unpack the Actions runner
+  ansible.builtin.unarchive:
+    src: "https://github.com/actions/runner/releases/download/v{{ github_runner_version }}/actions-runner-linux-x64-{{ github_runner_version }}.tar.gz"
+    dest: "/home/{{ github_runner_user }}/actions-runner"
+    remote_src: true
+    owner: "{{ github_runner_user }}"
+    creates: "/home/{{ github_runner_user }}/actions-runner/config.sh"
+
+- name: Install runner OS dependencies
+  ansible.builtin.command: ./bin/installdependencies.sh
+  args:
+    chdir: "/home/{{ github_runner_user }}/actions-runner"
+  changed_when: false
+
+- name: Register the runner with GitHub (first run only)
+  become: true
+  become_user: "{{ github_runner_user }}"
+  ansible.builtin.command: >
+    ./config.sh --unattended --replace
+    --url https://github.com/{{ github_repo }}
+    --token {{ vault_github_runner_token }}
+    --name {{ project }}-ec2
+    --labels {{ github_runner_labels }}
+  args:
+    chdir: "/home/{{ github_runner_user }}/actions-runner"
+    creates: "/home/{{ github_runner_user }}/actions-runner/.runner"
+  no_log: true
+
+- name: Runner environment (kubeconfig)
+  ansible.builtin.copy:
+    dest: "/home/{{ github_runner_user }}/actions-runner/.env"
+    content: |
+      KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+      LANG=C.UTF-8
+    owner: "{{ github_runner_user }}"
+    mode: "0644"
+
+- name: Install runner as a systemd service
+  ansible.builtin.command: ./svc.sh install {{ github_runner_user }}
+  args:
+    chdir: "/home/{{ github_runner_user }}/actions-runner"
+    creates: "/etc/systemd/system/actions.runner.{{ github_repo | replace('/', '-') }}.{{ project }}-ec2.service"
+
+- name: Start runner service
+  ansible.builtin.command: ./svc.sh start
+  args:
+    chdir: "/home/{{ github_runner_user }}/actions-runner"
+  changed_when: false
