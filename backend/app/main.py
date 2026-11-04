@@ -54,6 +54,9 @@ async def access_log(request: Request, call_next):
 @app.get("/health", tags=["ops"])
 def health():
     """Liveness probe: process is up."""
+    # DEMO ONLY (branch demo/broken-health): a bad build that passes CI but fails in production.
+    if settings.environment == "production":
+        return JSONResponse({"status": "broken"}, status_code=500)
     return {"status": "ok", "version": settings.version, "git_sha": settings.git_sha}
 
 
