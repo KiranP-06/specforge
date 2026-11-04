@@ -1,13 +1,17 @@
-resource "random_id" "suffix" { byte_length = 3 }
+# Learner Lab denies s3:GetBucketObjectLockConfiguration, so Terraform cannot manage
+# aws_s3_bucket directly. The bucket is created once with the AWS CLI and read here.
+variable "app_bucket" {
+  description = "Existing app bucket (create first: aws s3api create-bucket --bucket <name>)"
+  type        = string
+}
 
 # Uploaded briefs, exports and nightly Postgres backups.
-resource "aws_s3_bucket" "app" {
-  bucket        = "${var.project}-app-${random_id.suffix.hex}"
-  force_destroy = true # lab environment: allow `terraform destroy` to empty it
+data "aws_s3_bucket" "app" {
+  bucket = var.app_bucket
 }
 
 resource "aws_s3_bucket_public_access_block" "app" {
-  bucket                  = aws_s3_bucket.app.id
+  bucket                  = data.aws_s3_bucket.app.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
@@ -15,19 +19,19 @@ resource "aws_s3_bucket_public_access_block" "app" {
 }
 
 resource "aws_s3_bucket_versioning" "app" {
-  bucket = aws_s3_bucket.app.id
+  bucket = data.aws_s3_bucket.app.id
   versioning_configuration { status = "Enabled" }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "app" {
-  bucket = aws_s3_bucket.app.id
+  bucket = data.aws_s3_bucket.app.id
   rule {
     apply_server_side_encryption_by_default { sse_algorithm = "AES256" }
   }
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "app" {
-  bucket = aws_s3_bucket.app.id
+  bucket = data.aws_s3_bucket.app.id
   rule {
     id     = "expire-old-backups"
     status = "Enabled"

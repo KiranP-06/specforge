@@ -8,7 +8,7 @@ output "instance_id" {
 }
 
 output "s3_bucket" {
-  value = aws_s3_bucket.app.bucket
+  value = data.aws_s3_bucket.app.bucket
 }
 
 output "ssh_command" {
@@ -26,7 +26,7 @@ output "ansible_inventory" {
     ${aws_eip.k3s.public_ip} ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/labsuser.pem
 
     [k3s:vars]
-    s3_bucket=${aws_s3_bucket.app.bucket}
+    s3_bucket=${data.aws_s3_bucket.app.bucket}
     aws_region=${var.region}
     project=${var.project}
   EOT

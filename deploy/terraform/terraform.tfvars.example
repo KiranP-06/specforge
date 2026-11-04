@@ -2,3 +2,4 @@
 admin_cidr  = "203.0.113.7/32" # curl -s ifconfig.me
 alarm_email = ""                # optional
 # instance_type = "t3.large"
+app_bucket  = "specforge-app-REPLACE" # create first: aws s3api create-bucket --bucket <name>

@@ -17,3 +17,5 @@ deploy/ansible/group_vars/all/vault.yml
 .venv/
 dump.rdb
 .ansible/
+tfplan
+*.tfplan
